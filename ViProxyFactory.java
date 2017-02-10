@@ -1,8 +1,14 @@
     /*
      *   utils to create wrapper code for a certain class
      */
-    class ViProxyFactory{
+    static class ViProxyFactory{
         private final static int SYNTHETIC = 0x1000;
+
+        private enum FilterAction{
+            E_NULL,
+            E_INVERT,
+            E_NORMAL,
+        };
 
         private String mOrigClass;
         private String mOrigPkg, mProxyPkg, mProxyClass;
@@ -19,12 +25,18 @@
             Log.d(mTag, String.format("%s.%s proxy for %s\n", proxyPkg, proxyClass, mOrigClass));
         }
 
-        private String filter(String name){
+        private String filter(String name, Map<String,String> filters, FilterAction invert){
             //replace with the desired name
-            for (Map.Entry<String,String> e : mFilters.entrySet()
-                 ) {
-                if(name.equals(e.getKey())){
-                    return e.getValue();
+            if(filters != null)
+            for (Map.Entry<String,String> e : filters.entrySet()) {
+                if(invert == FilterAction.E_INVERT){
+                    if(name.equals(e.getValue())){
+                        return e.getKey();
+                    }
+                }else if(invert == FilterAction.E_NORMAL){
+                    if(name.equals(e.getKey())){
+                        return e.getValue();
+                    }
                 }
             }
 
@@ -36,6 +48,16 @@
             for (Map.Entry<String,String> e : mFilters.entrySet()
                     ) {
                 if(name.equals(e.getKey())){
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private boolean involvedByParameters(Method med){
+            Class<?> types[] = med.getParameterTypes();
+            for (Class<?> type:types) {
+                if(involved(type.getName())){
                     return true;
                 }
             }
@@ -74,50 +96,71 @@
             return " ";
         }
 
+        private String constructMethod(Method med, boolean isOverride){
+            FilterAction typedef;
+            FilterAction typecast;
+            String annotationFlag;
+            String caller;
+            if(isOverride){
+                typedef = FilterAction.E_NULL;
+                typecast = FilterAction.E_NORMAL;
+                annotationFlag = "@Override\n";
+                caller = "this";
+            }else{
+                typedef = FilterAction.E_NORMAL;
+                typecast = FilterAction.E_NULL;
+                annotationFlag = "";
+                caller = "super";
+            }
+
+            int para;
+            Class<?> types[] = med.getParameterTypes();
+            String viMed = "\n";
+
+            //construct method header
+            viMed += annotationFlag;
+            String accessFlag = getMethodAccessName(med);
+            viMed += accessFlag + med.getReturnType().getName() + " ";
+            viMed += med.getName() + "(";
+            para = 0;
+            for (Class<?> type:types) {
+                String prefix = viMed.endsWith("(") ? "" : ", ";
+                viMed += prefix + filter(type.getName(), mFilters, typedef) + " " + "p_" + para++;
+            }
+            viMed += ")";
+
+            //construct method's body
+            viMed += "{ ";
+            if(!med.getReturnType().getName().equals("void")){
+                viMed += "return ";
+            }
+            viMed += String.format(" %s.%s(", caller, med.getName());
+            para = 0;
+            for (Class<?> type:types) {
+                String prefix = viMed.endsWith("(") ? "" : ", ";
+                String cast = typecast==FilterAction.E_NULL ? "" : String.format("(%s)", filter(type.getName(), mFilters, typecast));
+                viMed += prefix + cast + "p_" + para++;
+            }
+            viMed += "); }";
+
+            return viMed;
+        }
+
         private String constructMethods(List list){
             String viFile = "";
 
             for (Object i:list) {
-                int para;
-                Method pubMed = (Method)i;
-                Class<?> types[] = pubMed.getParameterTypes();
-                String viMed = "\n";
-                boolean isNeeded = false;
-
-                //construct method header
-                String accessFlag = getMethodAccessName(pubMed);
-                viMed += accessFlag + pubMed.getReturnType().getName() + " ";
-                viMed += pubMed.getName() + "(";
-                para = 0;
-                for (Class<?> type:types
-                        ) {
-                    String prefix = viMed.endsWith("(") ? "" : ", ";
-                    viMed += prefix + filter(type.getName()) + " " + "p_" + para++;
-                    if(involved(type.getName())){
-                        isNeeded = true;
-                    }
-                }
-                viMed += ")";
-
-                //construct method's body
-                viMed += "{ ";
-                if(!pubMed.getReturnType().getName().equals("void")){
-                    viMed += "return ";
-                }
-                viMed += " super." + pubMed.getName() + "(";
-                para = 0;
-                for (Class<?> type:types
-                        ) {
-                    String prefix = viMed.endsWith("(") ? "" : ", ";
-                    viMed += prefix + "p_" + para++;
-                }
-                viMed += "); }";
+                Method med = (Method)i;
+                boolean isNeeded = involvedByParameters(med);
 
                 //append to file
                 if(isNeeded){
+                    String viMed = constructMethod(med, false);
+                    viFile += viMed;
+                    viMed = constructMethod(med, true);
                     viFile += viMed;
                 }else{
-                    Log.d(mTag, "skip method "+pubMed.getName());
+                    Log.d(mTag, "skip method "+med.getName());
                 }
             }
 
